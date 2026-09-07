@@ -9,10 +9,9 @@ from torch.nn import functional as F
 
 batch_size = 32
 block_size = 8
-max_iter = 3000
+max_iter = 5000
 learning_rate = 1e-3
 n_embed = 32
-n_head = 16
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 with open('input.txt','r',encoding='utf-8') as f:
@@ -58,20 +57,43 @@ xb, yb = get_batch('train')
 
 
 
+class Head(nn.Module):
+
+    def __init__(self,head_size):
+        super().__init__()
+        self.key = nn.Linear(n_embed,head_size,bias=False)
+        self.query = nn.Linear(n_embed,head_size,bias=False)
+        self.value = nn.Linear(n_embed,head_size,bias=False)
+        self.register_buffer('tril',torch.tril(torch.ones(block_size,block_size)))
+      
+    def forward(self,x):
+        B,T,C = x.shape
+        k = self.key(x)
+        q = self.query(x)
+        v = self.value(x)
+        wei = q @ k.transpose(-2,-1) * C**-0.5
+        wei = wei.masked_fill(self.tril[:T,:T]==0,float('-inf'))
+        wei = F.softmax(wei,dim=-1)
+        out = wei @ v
+        return out
+
 class BiagramLanguageModel(nn.Module):
 
-    def __init__(self,vocab_size):
+    def __init__(self):
         super().__init__()
         self.token_embedding_table = nn.Embedding(vocab_size,n_embed)
         self.position_embedding = nn.Embedding(block_size,n_embed)
+        self.sa_head = Head(n_embed)
         self.lm_head = nn.Linear(n_embed,vocab_size)
+
     def forward(self,idx,targets=None):
         B,T = idx.shape
         tok_embed = self.token_embedding_table(idx) #(B,T,n_embed)
         pos_embed = self.position_embedding(torch.arange(T,device=device)) #(T,n_embed)
         x = tok_embed+pos_embed #(B,T,n_embed)+(T,n_embed)-->(B,T,n_embed)
+        x = self.sa_head(x)
         logits = self.lm_head(x)
-        if(targets==None):
+        if(targets is None):
             loss = None
         else:
             
@@ -84,14 +106,15 @@ class BiagramLanguageModel(nn.Module):
     def generate(self,idx,max_new_tokens):
 
         for _ in range(max_new_tokens):
-            logits,loss = self(idx)
+            idx_cond = idx[:,-block_size:]
+            logits,loss = self(idx_cond)
             logits = logits[:,-1,:]
             probs = F.softmax(logits,dim=-1)
             idx_next = torch.multinomial(probs,num_samples=1)
             idx = torch.cat((idx,idx_next),dim=1)
         return idx
 
-m = BiagramLanguageModel(vocab_size)
+m = BiagramLanguageModel()
 m.to(device=device)
 
 
